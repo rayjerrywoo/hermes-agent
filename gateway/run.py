@@ -9168,18 +9168,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                             _compressed
                                         )
                                     else:
-                                        # No rewrite happened — transcript preserved
-                                        # unchanged, so the post-compression counts equal
-                                        # the pre-compression ones.
-                                        _new_count = _msg_count
-                                        _new_tokens = _approx_tokens
-                                        logger.warning(
-                                            "Gateway hygiene compression for session %s "
-                                            "did not rotate or compact in place "
-                                            "(no session_db on the hygiene agent) — "
-                                            "preserving the original transcript instead "
-                                            "of overwriting it with the summary (#21301).",
-                                            session_entry.session_id,
+                                        # Compression succeeded but neither rotation
+                                        # nor in-place compaction could persist the
+                                        # result (hygiene agent has no session_db).
+                                        # The gateway's own session_store has full
+                                        # DB access — write it here.
+                                        import uuid as _hyg_uuid
+                                        _new_sid = (
+                                            f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_"
+                                            f"{_hyg_uuid.uuid4().hex[:8]}"
+                                        )
+                                        self.session_store.rewrite_transcript(
+                                            _new_sid, _compressed
+                                        )
+                                        session_entry.session_id = _new_sid
+                                        self.session_store._save()
+                                        self._sync_telegram_topic_binding(
+                                            source, session_entry,
+                                            reason="hygiene-compression",
+                                        )
+                                        session_entry.last_prompt_tokens = 0
+                                        history = _compressed
+                                        _new_count = len(_compressed)
+                                        _new_tokens = estimate_messages_tokens_rough(
+                                            _compressed
+                                        )
+                                        logger.info(
+                                            "Session hygiene: compressed %s → %s msgs "
+                                            "(gateway fallback write)",
+                                            _msg_count, _new_count,
                                         )
 
                                     logger.info(
